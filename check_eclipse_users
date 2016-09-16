@@ -1,0 +1,93 @@
+#!/bin/bash
+# this file: /usr/lib64/nagios/plugins/check_eclipse_users
+# Mel - 2016-06-06 - report eclipse services count
+# Mel - 2016-08-10 - fixed long arguments
+# Mel - 2016-09-12 - create 2 phantom stats, uvlictool and phantoms in process list (-solar sessions)
+export PATH=/usr/lib64/qt-3.3/bin:/u2/UTILS/ubin:/u2/UTILS/bin:/u2/uv/bin:/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+version="2016-09-12"
+uvlicout=/tmp/uvlictool.out.$$
+
+usage(){
+    cat << MEL
+Usage:
+$(basename $0) [OPTION]... [OPTION]...
+
+Options:
+ -w INTEGER, --warning INTEGER, --warning=INTEGER (minimum 10, defaults to 80)
+    Set WARNING status if more than INTEGER percent licenses are in use ( w < c ).
+ -c INTEGER, --critical INTEGER, --critical=INTEGER (maximum 99, defaults to 90)
+    Set CRITICAL status if more than INTEGER percent licenses are in use ( w < c ).
+ -h, --help
+    Print help screen
+ -V, --version
+    Print version information
+
+Example:
+  $(basename $0) -w 80 -c 90
+
+MEL
+}
+
+showver(){
+    echo "$(basename $0) version $version"
+}
+
+uvlictool >$uvlicout
+inuse="$(grep 'license seats are in use' $uvlicout)"
+inuse="${inuse%% *}"
+avail="$(grep 'license seats are available' $uvlicout)"
+avail="${avail%% *}"
+maxlic="$((inuse+avail))"
+solars="$(ps auxw|grep SOLAR.J2EE.CONNECTION|grep -v grep|wc -l)"
+nonsolarphantoms="$(ps auxw|grep phantom|egrep -v 'grep|SOLAR.J2EE.CONNECTION'|wc -l)"
+phantoms="$(egrep '^[0-9][0-9]*\s\s*[0-9][0-9]*\s\s*iPHANTOM' $uvlicout|wc -l)"
+eterms="$(pidof -x uv|wc -w)"
+
+while getopts ":c:w:-:hV" opt; do
+    case $opt in
+        c)  crit=$OPTARG ;;
+        w)  warn=$OPTARG ;;
+        h)  usage;exit ;;
+        V)  showver;exit ;;
+        -)
+            case $OPTARG in
+                help)       usage;exit ;;
+                version)    showver;exit ;;
+                warning)    warn=${!OPTIND};shift $OPTIND;OPTIND=1;;
+                warning=*)  warn=${OPTARG##*=};;
+                critical)   crit=${!OPTIND};shift $OPTIND;OPTIND=1;;
+                critical=*) crit=${OPTARG##*=};;
+                *)
+                    echo "Invalid long argument: --$OPTARG";usage;exit 1;;
+            esac
+            ;;
+        \?) echo "Invalid short argument: -$OPTARG";usage;exit 1 ;;
+        :)  echo "Argument -$OPTARG missing required value";usage;exit 1 ;;
+        *)  echo "Not sure how I got here: \"-$opt $OPTARG\"";usage;exit 1 ;;
+    esac
+done
+
+[[ $crit -lt 0 ]] && unset crit
+[[ $crit -gt 99 ]] && unset crit
+[[ $warn -lt 10 ]] && unset warn
+[[ $warn -gt $crit ]] && unset warn
+[[ ${warn:-80} -gt ${crit:-90} ]] && unset warn crit
+warnlic="$(echo "$maxlic*.${warn:-8}"|bc)"
+warnlic="${warnlic%%.*}"
+critlic="$(echo "$maxlic*.${crit:-9}"|bc)"
+critlic="${critlic%%.*}"
+
+summary="| Solar=$solars;$warnlic;$critlic;0 iPhantoms_uvlictool=$phantoms;$warnlic;$critlic;0 Phantom_procs=$nonsolarphantoms;$warnlic;$critlic;0 Eterms=$eterms;$warnlic;$critlic;0 Total=$inuse;$warnlic;$critlic;0"
+/bin/rm -f $uvlicout
+
+if [[ $inuse -ge $critlic ]];then
+    echo "CRITICAL: Over $critlic connections: $inuse;$summary"
+    exit 2
+elif [[ $inuse -ge $warnlic ]];then
+    echo "WARNING: Over $warnlic connections: $inuse;$summary"
+    exit 1
+else
+    echo "OK: There are: $inuse connections;$summary"
+    exit 0
+fi
